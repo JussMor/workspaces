@@ -20,6 +20,35 @@ curl http://localhost:7000/health
 # → {"service":"forge","status":"ok","version":"0.0.1"}
 ```
 
+## Sandbox Quickstart (requires local Docker)
+
+```bash
+# Run the full end-to-end verification (create → exec → destroy)
+make verify-docker
+
+# Or manually:
+
+# 1. Create a sandbox
+SB=$(curl -s -X POST localhost:7000/sandboxes \
+  -H 'content-type: application/json' \
+  -d '{"project_id":"demo","agent_role":"coder","image":"alpine:3.19"}')
+echo "$SB" | python3 -m json.tool
+ID=$(echo "$SB" | python3 -c 'import sys,json; print(json.load(sys.stdin)["id"])')
+
+# 2. List sandboxes
+curl -s localhost:7000/sandboxes | python3 -m json.tool
+
+# 3. Exec a command inside the sandbox
+curl -s -X POST localhost:7000/sandboxes/$ID/exec \
+  -H 'content-type: application/json' \
+  -d '{"cmd":["sh","-c","echo hello from sandbox"]}' | python3 -m json.tool
+# → {"stdout":"hello from sandbox\n","stderr":"","exit_code":0}
+
+# 4. Destroy the sandbox
+curl -s -X DELETE localhost:7000/sandboxes/$ID -w "%{http_code}\n"
+# → 204
+```
+
 ## Architecture
 
 ```
@@ -55,7 +84,7 @@ cmd/forge/main.go
 
 | Layer | Package | Week | Status |
 |-------|---------|------|--------|
-| 01 — Sandbox | `internal/sandbox` | 1-2 | 🏗 Stub |
+| 01 — Sandbox | `internal/sandbox` | 1-2 | ✅ Live (DockerDriver + registry + reaper) |
 | 02 — Agent Engine | `internal/agent` | 3-4 | 🏗 Stub |
 | 03 — Context Engine | `internal/context` | 5-6 | 🏗 Stub |
 | 04 — Coordinator | `internal/coordinator` | 7-8 | 🏗 Stub |

@@ -37,3 +37,49 @@ clean:
 typecheck:
 	$(GO) build ./...
 	cd apps/dashboard && npx tsc --noEmit
+
+## verify-docker: run live sandbox end-to-end test (requires Docker daemon)
+## Run this locally — the CI sandbox does not expose the Docker socket.
+## Usage: make verify-docker
+verify-docker:
+	@echo "▶ Starting forge on :7999..."
+	@PORT=7999 $(GO) run ./cmd/forge &
+	@FORGE_PID=$$! ; \
+	cleanup() { kill $$FORGE_PID 2>/dev/null; wait $$FORGE_PID 2>/dev/null; }; \
+	trap cleanup EXIT INT TERM; \
+	sleep 2; \
+	echo "▶ Health check"; \
+	curl -fsS http://localhost:7999/health | python3 -m json.tool; \
+	echo ""; \
+	echo "▶ Creating sandbox (alpine:3.19)"; \
+	SB=$$(curl -s -X POST http://localhost:7999/sandboxes \
+	  -H 'content-type: application/json' \
+	  -d '{"project_id":"verify","agent_role":"coder","image":"alpine:3.19"}'); \
+	echo "$$SB" | python3 -m json.tool; \
+	ID=$$(echo "$$SB" | python3 -c 'import sys,json; print(json.load(sys.stdin)["id"])'); \
+	echo "Sandbox ID: $$ID"; \
+	echo ""; \
+	echo "▶ List sandboxes"; \
+	curl -s http://localhost:7999/sandboxes | python3 -m json.tool; \
+	echo ""; \
+	echo "▶ Exec: echo hello from sandbox"; \
+	RESULT=$$(curl -s -X POST http://localhost:7999/sandboxes/$$ID/exec \
+	  -H 'content-type: application/json' \
+	  -d '{"cmd":["sh","-c","echo hello from sandbox"]}'); \
+	echo "$$RESULT" | python3 -m json.tool; \
+	STDOUT=$$(echo "$$RESULT" | python3 -c 'import sys,json; print(json.load(sys.stdin)["stdout"])'); \
+	if echo "$$STDOUT" | grep -q "hello from sandbox"; then \
+	  echo "✅ exec output correct: $$STDOUT"; \
+	else \
+	  echo "❌ exec output wrong: $$STDOUT"; exit 1; \
+	fi; \
+	echo ""; \
+	echo "▶ Destroying sandbox"; \
+	HTTP_CODE=$$(curl -s -o /dev/null -w '%{http_code}' -X DELETE http://localhost:7999/sandboxes/$$ID); \
+	if [ "$$HTTP_CODE" = "204" ]; then \
+	  echo "✅ DELETE returned 204"; \
+	else \
+	  echo "❌ DELETE returned $$HTTP_CODE"; exit 1; \
+	fi; \
+	echo ""; \
+	echo "✅ verify-docker passed"
