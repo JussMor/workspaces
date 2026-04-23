@@ -20,7 +20,11 @@ func (s *Server) registerRoutes(r *chi.Mux) {
 	r.Get("/tasks/{id}", notImplemented("coordinator", "7-10"))
 
 	// Sandboxes — LAYER 01/06, Week 1-2.
-	r.Get("/sandboxes", notImplemented("sandbox", "1-2"))
+	r.Post("/sandboxes", s.handleCreateSandbox)
+	r.Get("/sandboxes", s.handleListSandboxes)
+	r.Get("/sandboxes/{id}", s.handleGetSandbox)
+	r.Post("/sandboxes/{id}/exec", s.handleExecSandbox)
+	r.Delete("/sandboxes/{id}", s.handleDeleteSandbox)
 
 	// GitHub webhooks — LAYER 05, Week 9.
 	r.Post("/webhooks/github", ghpkg.HandleWebhook)
