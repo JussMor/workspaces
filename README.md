@@ -9,14 +9,14 @@ FORGE is a 7-layer monolith built with Go (backend) and Next.js 15 (dashboard). 
 ## Quickstart
 
 ```bash
-# Start all services (backend :7000 + dashboard :3000)
+# Start all services (dashboard :3000, backend host port defaults to :7001)
 make run
 
 # Dashboard
 open http://localhost:3000
 
 # Backend health
-curl http://localhost:7000/health
+curl http://localhost:7001/health
 # → {"service":"forge","status":"ok","version":"0.0.1"}
 ```
 
@@ -82,14 +82,14 @@ cmd/forge/main.go
 
 ## Layer Status
 
-| Layer | Package | Week | Status |
-|-------|---------|------|--------|
-| 01 — Sandbox | `internal/sandbox` | 1-2 | ✅ Live (DockerDriver + registry + reaper) |
-| 02 — Agent Engine | `internal/agent` | 3-4 | 🏗 Stub |
-| 03 — Context Engine | `internal/context` | 5-6 | 🏗 Stub |
-| 04 — Coordinator | `internal/coordinator` | 7-8 | 🏗 Stub |
-| 05 — GitHub | `internal/github` | 9 | 🏗 Stub |
-| 06 — Orchestrator API | `internal/api` | 10 | ✅ /health live |
-| 07 — Dashboard | `apps/dashboard` | 11-12 | 🏗 Scaffold |
+| Layer                 | Package                | Week  | Status                                     |
+| --------------------- | ---------------------- | ----- | ------------------------------------------ |
+| 01 — Sandbox          | `internal/sandbox`     | 1-2   | ✅ Live (DockerDriver + registry + reaper) |
+| 02 — Agent Engine     | `internal/agent`       | 3-4   | 🏗 Stub                                    |
+| 03 — Context Engine   | `internal/context`     | 5-6   | 🏗 Stub                                    |
+| 04 — Coordinator      | `internal/coordinator` | 7-8   | 🏗 Stub                                    |
+| 05 — GitHub           | `internal/github`      | 9     | 🏗 Stub                                    |
+| 06 — Orchestrator API | `internal/api`         | 10    | ✅ /health live                            |
+| 07 — Dashboard        | `apps/dashboard`       | 11-12 | 🏗 Scaffold                                |
 
 See [ARCHITECTURE.md](./ARCHITECTURE.md) for detailed design rationale.

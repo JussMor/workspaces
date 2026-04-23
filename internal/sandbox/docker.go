@@ -15,6 +15,7 @@ import (
 	"github.com/docker/docker/api/types/image"
 	docker_network "github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
+	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/google/uuid"
 )
 
@@ -195,7 +196,7 @@ func (d *DockerDriver) Exec(ctx context.Context, id, cmd string) (ExecResult, er
 	defer attach.Close()
 
 	var stdoutBuf, stderrBuf bytes.Buffer
-	if err := demuxDockerStream(attach.Reader, &stdoutBuf, &stderrBuf); err != nil {
+	if _, err := stdcopy.StdCopy(&stdoutBuf, &stderrBuf, attach.Reader); err != nil {
 		slog.Warn("exec stream demux", "err", err)
 	}
 
@@ -339,33 +340,6 @@ func (d *DockerDriver) IP(ctx context.Context, id string) (string, error) {
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
-
-// demuxDockerStream reads Docker's multiplexed stream format and writes
-// stdout frames to out and stderr frames to errOut.
-// Header format: [stream_type(1)] [0 0 0(3)] [size(4 big-endian)]
-func demuxDockerStream(r io.Reader, out, errOut io.Writer) error {
-	hdr := make([]byte, 8)
-	for {
-		_, err := io.ReadFull(r, hdr)
-		if err == io.EOF {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		size := int64(hdr[4])<<24 | int64(hdr[5])<<16 | int64(hdr[6])<<8 | int64(hdr[7])
-		var dst io.Writer
-		switch hdr[0] {
-		case 2:
-			dst = errOut
-		default:
-			dst = out
-		}
-		if _, err := io.CopyN(dst, r, size); err != nil {
-			return err
-		}
-	}
-}
 
 // basename returns the last path component of p.
 func basename(p string) string {
