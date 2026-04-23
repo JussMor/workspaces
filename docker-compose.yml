@@ -1,0 +1,18 @@
+version: "3.9"
+services:
+  backend:
+    build: .
+    ports:
+      - "7000:7000"
+    environment:
+      PORT: "7000"
+      SANDBOX_DRIVER: "docker"
+
+  dashboard:
+    build: ./apps/dashboard
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: "http://localhost:7000"
+    depends_on:
+      - backend

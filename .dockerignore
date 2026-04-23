@@ -1,0 +1,6 @@
+.git
+apps/dashboard/node_modules
+apps/dashboard/.next
+docs
+*.md
+!README.md

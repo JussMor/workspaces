@@ -1,0 +1,30 @@
+# Go
+/forge
+*.exe
+*.test
+*.out
+vendor/
+
+# Dashboard
+apps/dashboard/node_modules/
+apps/dashboard/.next/
+apps/dashboard/out/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Compiled
+dist/
+build/
