@@ -1,10 +1,11 @@
-.PHONY: dev build run down health clean typecheck verify-docker sandbox-demo
+.PHONY: dev build run down health clean typecheck verify-docker sandbox-demo agent-demo
 
 BINARY := forge
 GO := go
 BUN := $(shell which bun 2>/dev/null || echo npm)
 BACKEND_HOST_PORT ?= 7001
 VERIFY_PORT ?= 7999
+ORIGIN_REPO_URL := $(shell git config --get remote.origin.url 2>/dev/null)
 
 export BACKEND_HOST_PORT
 
@@ -127,3 +128,89 @@ sandbox-demo:
 	fi; \
 	echo ""; \
 	echo "═══ ✅ Layer 01 sandbox-demo passed ═══"
+
+## agent-demo: Week 3-4 deliverable
+## Runs a single coder agent inside a sandbox against a repo + task.
+## Requires a local Docker daemon + Ollama running.
+## Usage: make agent-demo REPO=<url> TASK="add a /ping endpoint"
+AGENT_TASK ?= add a /ping endpoint that returns JSON {"pong":true}
+AGENT_REPO ?= $(ORIGIN_REPO_URL)
+AGENT_ROLE ?= coder
+AGENT_IMAGE ?= alpine:3.19
+agent-demo:
+	@echo "═══ FORGE — Layer 02 Agent Engine Demo ═══"
+	@echo ""
+	@echo "▶ Ensuring forge is reachable..."; \
+	RUN_PORT=$(VERIFY_PORT); FORGE_PID=""; STARTED_FORGE=0; \
+	HEALTH_OK=0; AGENT_OK=0; \
+	if curl -fsS "http://localhost:$$RUN_PORT/health" >/dev/null 2>&1; then \
+	  HEALTH_OK=1; \
+	  PROBE_CODE=$$(curl -sS -o /dev/null -w '%{http_code}' -X POST "http://localhost:$$RUN_PORT/agent/run" \
+	    -H 'content-type: application/json' \
+	    -d '{}'); \
+	  if [ "$$PROBE_CODE" != "404" ]; then AGENT_OK=1; fi; \
+	fi; \
+	if [ "$$HEALTH_OK" = "1" ] && [ "$$AGENT_OK" = "1" ]; then \
+	  echo "ℹ️  Reusing existing forge on :$$RUN_PORT"; \
+	else \
+	  if [ "$$HEALTH_OK" = "1" ] && [ "$$AGENT_OK" != "1" ]; then \
+	    echo "ℹ️  Existing service on :$$RUN_PORT is not forge API compatible (/agent/run missing)"; \
+	    RUN_PORT=$$((RUN_PORT + 1)); \
+	    while lsof -iTCP:$$RUN_PORT -sTCP:LISTEN >/dev/null 2>&1; do \
+	      RUN_PORT=$$((RUN_PORT + 1)); \
+	    done; \
+	  fi; \
+	  echo "▶ Starting forge on :$$RUN_PORT..."; \
+	  PORT=$$RUN_PORT $(GO) run ./cmd/forge & \
+	  FORGE_PID=$$!; STARTED_FORGE=1; \
+	fi; \
+	cleanup() { \
+	  if [ "$$STARTED_FORGE" = "1" ] && [ -n "$$FORGE_PID" ]; then \
+	    kill $$FORGE_PID 2>/dev/null; \
+	    wait $$FORGE_PID 2>/dev/null; \
+	  fi; \
+	}; \
+	trap cleanup EXIT INT TERM; \
+	for i in 1 2 3 4 5 6 7 8 9 10; do \
+	  if curl -fsS "http://localhost:$$RUN_PORT/health" >/dev/null 2>&1; then \
+	    PROBE_CODE=$$(curl -sS -o /dev/null -w '%{http_code}' -X POST "http://localhost:$$RUN_PORT/agent/run" \
+	      -H 'content-type: application/json' \
+	      -d '{}'); \
+	    if [ "$$PROBE_CODE" != "404" ]; then break; fi; \
+	  fi; \
+	  if [ "$$STARTED_FORGE" = "1" ] && ! kill -0 $$FORGE_PID 2>/dev/null; then \
+	    echo "❌ forge exited before becoming healthy"; exit 1; \
+	  fi; \
+	  sleep 1; \
+	done; \
+	if ! curl -fsS "http://localhost:$$RUN_PORT/health" >/dev/null 2>&1; then \
+	  echo "❌ forge not healthy on :$$RUN_PORT"; exit 1; \
+	fi; \
+	PROBE_CODE=$$(curl -sS -o /dev/null -w '%{http_code}' -X POST "http://localhost:$$RUN_PORT/agent/run" \
+	  -H 'content-type: application/json' \
+	  -d '{}'); \
+	if [ "$$PROBE_CODE" = "404" ]; then \
+	  echo "❌ forge on :$$RUN_PORT does not expose /agent/run"; exit 1; \
+	fi; \
+	echo "✅ Health OK"; \
+	echo ""; \
+	echo "▶ Running agent (role=$(AGENT_ROLE), task=\"$(AGENT_TASK)\")"; \
+	echo "  This may take several minutes while the LLM reasons..."; \
+	echo ""; \
+	BODY=$$(printf '{"repo_url":"%s","task":"%s","role":"%s","image":"%s"}' \
+	  "$(AGENT_REPO)" "$(AGENT_TASK)" "$(AGENT_ROLE)" "$(AGENT_IMAGE)"); \
+	TMP=$$(mktemp); \
+	HTTP_CODE=$$(curl -sS -o "$$TMP" -w '%{http_code}' -X POST "http://localhost:$$RUN_PORT/agent/run" \
+	  -H 'content-type: application/json' \
+	  -d "$$BODY"); \
+	RESULT=$$(cat "$$TMP"); \
+	rm -f "$$TMP"; \
+	if [ "$$HTTP_CODE" != "200" ]; then \
+	  echo "❌ /agent/run failed (HTTP $$HTTP_CODE)"; \
+	  printf '%s\n' "$$RESULT"; \
+	  exit 1; \
+	fi; \
+	echo "── Agent Result ──"; \
+	printf '%s\n' "$$RESULT" | python3 -m json.tool; \
+	echo ""; \
+	echo "═══ ✅ Layer 02 agent-demo complete ═══"

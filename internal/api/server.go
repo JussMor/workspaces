@@ -9,6 +9,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
+	"github.com/jussmor/workspaces/internal/agent"
 	forgectx "github.com/jussmor/workspaces/internal/context"
 	"github.com/jussmor/workspaces/internal/coordinator"
 	"github.com/jussmor/workspaces/internal/github"
@@ -25,6 +26,7 @@ type Server struct {
 	Context     *forgectx.Manager
 	Sandbox     sandbox.Driver
 	Registry    *sandbox.Registry
+	Agent       *agent.Engine
 }
 
 // NewServer constructs a Server with all dependencies wired in.
@@ -34,6 +36,7 @@ func NewServer(
 	ctxMgr *forgectx.Manager,
 	drv sandbox.Driver,
 	reg *sandbox.Registry,
+	agentEngine *agent.Engine,
 ) *Server {
 	return &Server{
 		Coordinator: coord,
@@ -41,6 +44,7 @@ func NewServer(
 		Context:     ctxMgr,
 		Sandbox:     drv,
 		Registry:    reg,
+		Agent:       agentEngine,
 	}
 }
 

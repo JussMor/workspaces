@@ -26,6 +26,9 @@ func (s *Server) registerRoutes(r *chi.Mux) {
 	r.Post("/sandboxes/{id}/exec", s.handleExecSandbox)
 	r.Delete("/sandboxes/{id}", s.handleDeleteSandbox)
 
+	// Agent — LAYER 02/06, Week 3-4.
+	r.Post("/agent/run", s.handleAgentRun)
+
 	// GitHub webhooks — LAYER 05, Week 9.
 	r.Post("/webhooks/github", ghpkg.HandleWebhook)
 

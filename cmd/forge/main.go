@@ -55,12 +55,10 @@ func main() {
 	// LAYER 03 — Context Manager.
 	ctxMgr := &forgectx.Manager{}
 
-	// LAYER 02 — Agent Engine (wired with sandbox).
-	tools := &agent.Tools{}
-	agentEngine := &agent.Engine{
-		Sandbox: drv,
-		Tools:   tools,
-	}
+	// LAYER 02 — Agent Engine (wired with sandbox + Ollama).
+	ollamaURL := envOr("OLLAMA_URL", "http://localhost:11434")
+	ollama := agent.NewOllamaClient(ollamaURL)
+	agentEngine := agent.NewEngine(drv, ollama)
 
 	// LAYER 05 — GitHub Client.
 	gh := &github.Client{
@@ -76,7 +74,7 @@ func main() {
 	}
 
 	// LAYER 06 — API Server.
-	srv := api.NewServer(coord, gh, ctxMgr, drv, reg)
+	srv := api.NewServer(coord, gh, ctxMgr, drv, reg, agentEngine)
 
 	// Graceful shutdown on SIGINT / SIGTERM.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
