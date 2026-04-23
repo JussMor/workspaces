@@ -43,6 +43,38 @@ To add a new driver (e.g. `gvisor`):
 3. Set `SANDBOX_DRIVER=gvisor` at runtime.
 4. Zero callsite changes required.
 
+## /sandboxes API Surface
+
+| Method | Path | Request | Response | Description |
+|--------|------|---------|----------|-------------|
+| `POST` | `/sandboxes` | `{project_id, agent_role, image}` | `201` sandbox record | Create container, attach to sandbox-net, persist in registry |
+| `GET` | `/sandboxes` | `?status=running\|sleeping\|dead&project_id=...` | `200 {sandboxes:[...]}` | List all sandboxes with optional filters |
+| `GET` | `/sandboxes/{id}` | — | `200` sandbox record or `404` | Get a single sandbox by ID |
+| `POST` | `/sandboxes/{id}/exec` | `{cmd:["sh","-c","echo hello"]}` | `200 {stdout, stderr, exit_code}` | Exec command inside container, touches last_active |
+| `DELETE` | `/sandboxes/{id}` | — | `204` | Destroy container and remove from registry |
+
+### Sandbox Record Shape
+
+```json
+{
+  "id":          "forge-sandbox-abcd1234",
+  "ip":          "10.0.5.3",
+  "status":      "running",
+  "project_id":  "my-project",
+  "agent_role":  "coder",
+  "created_at":  "2026-04-23T15:00:00Z",
+  "last_active": "2026-04-23T15:05:00Z",
+  "mem_usage":   0,
+  "transport":   "none"
+}
+```
+
+### Idle Reaper
+
+A background goroutine fires every 60 s:
+- `running → sleeping` after `FORGE_IDLE_SLEEP_MIN` (default 10) min of inactivity
+- `sleeping → destroyed` after `FORGE_IDLE_DESTROY_MIN` (default 30) min of continued inactivity
+
 ## Environment Flags
 
 | Variable | Default | Description |
@@ -51,6 +83,11 @@ To add a new driver (e.g. `gvisor`):
 | `SANDBOX_DRIVER` | `docker` | Sandbox implementation (`docker` or `firecracker`) |
 | `GITHUB_TOKEN` | — | GitHub API token for PR operations |
 | `OLLAMA_URL` | `http://localhost:11434` | Local LLM endpoint |
+| `FORGE_DB_PATH` | `./data/forge.db` | SQLite registry path |
+| `FORGE_MEM_MB` | `8192` | Container memory cap (MB) |
+| `FORGE_CPUS` | `2` | Container CPU cores |
+| `FORGE_IDLE_SLEEP_MIN` | `10` | Minutes idle before sandbox sleeps |
+| `FORGE_IDLE_DESTROY_MIN` | `30` | Minutes sleeping before sandbox is destroyed |
 
 ## Running Locally
 

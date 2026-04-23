@@ -24,6 +24,7 @@ type Server struct {
 	GitHub      *github.Client
 	Context     *forgectx.Manager
 	Sandbox     sandbox.Driver
+	Registry    *sandbox.Registry
 }
 
 // NewServer constructs a Server with all dependencies wired in.
@@ -32,12 +33,14 @@ func NewServer(
 	gh *github.Client,
 	ctxMgr *forgectx.Manager,
 	drv sandbox.Driver,
+	reg *sandbox.Registry,
 ) *Server {
 	return &Server{
 		Coordinator: coord,
 		GitHub:      gh,
 		Context:     ctxMgr,
 		Sandbox:     drv,
+		Registry:    reg,
 	}
 }
 
