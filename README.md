@@ -1,5 +1,8 @@
 # FORGE
 
+<img width="843" height="730" alt="Screenshot 2026-04-23 at 11 42 44 PM" src="https://github.com/user-attachments/assets/03fc7291-93ae-43d5-b8c3-5dc80662c937" />
+
+
 AI Software Engineering Platform. FORGE runs LLM agents inside Linux sandboxes to read tasks, edit code, run tests, and expose development services.
 
 ## Current Status (April 2026)
