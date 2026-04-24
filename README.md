@@ -2,6 +2,9 @@
 
 **AI Software Engineering Platform** — autonomous code agent that reads GitHub issues, writes code, runs tests, and merges PRs.
 
+<img width="843" height="730" alt="Screenshot 2026-04-23 at 11 42 44 PM" src="https://github.com/user-attachments/assets/70851c27-2a3c-464e-9952-3295d94c1890" />
+
+
 ## Overview
 
 FORGE is a 7-layer monolith built with Go (backend) and Next.js 15 (dashboard). Each layer is an isolated `internal/` package wired together via dependency injection in a single binary (`cmd/forge`). The sandbox driver abstraction (`internal/sandbox`) makes the Docker→Firecracker migration a zero-callsite swap.
