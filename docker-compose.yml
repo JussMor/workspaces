@@ -7,6 +7,13 @@ services:
     environment:
       PORT: "7000"
       SANDBOX_DRIVER: "docker"
+      OLLAMA_URL: "http://host.docker.internal:11434"
+    user: "0:0"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - default
+      - sandbox-net
 
   dashboard:
     build: ./apps/dashboard
@@ -16,3 +23,12 @@ services:
       NEXT_PUBLIC_API_URL: "http://localhost:${BACKEND_HOST_PORT:-7001}"
     depends_on:
       - backend
+
+networks:
+  # Shared with sandbox containers so the backend can reverse-proxy
+  # HTTP traffic from the host into servers running inside sandboxes.
+  # The Go driver (internal/sandbox/docker.go) creates this network on
+  # startup, so we declare it external here to avoid label conflicts.
+  sandbox-net:
+    name: sandbox-net
+    external: true

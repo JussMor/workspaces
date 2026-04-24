@@ -1,10 +1,13 @@
-.PHONY: dev build run down health clean typecheck verify-docker sandbox-demo agent-demo
+.PHONY: dev build run down health clean typecheck verify-docker sandbox-demo sandbox-image agent-demo integration-test churn-test
 
 BINARY := forge
 GO := go
 BUN := $(shell which bun 2>/dev/null || echo npm)
 BACKEND_HOST_PORT ?= 7001
 VERIFY_PORT ?= 7999
+REPO ?=
+SANDBOX_ID ?=
+TASK ?= add a /ping endpoint that returns {"pong":true}
 ORIGIN_REPO_URL := $(shell git config --get remote.origin.url 2>/dev/null)
 
 export BACKEND_HOST_PORT
@@ -38,10 +41,24 @@ clean:
 	rm -f $(BINARY)
 	rm -rf apps/dashboard/.next apps/dashboard/out
 
+## sandbox-image: build the pre-baked forge-sandbox:latest image used by the agent
+## Includes the `forge` user, git, gh, go, node, python, kubectl, docker CLI, awscli, sudo.
+sandbox-image:
+	docker build -f Dockerfile.sandbox -t forge-sandbox:latest .
+
 ## typecheck: verify Go + TypeScript compile without errors
 typecheck:
 	$(GO) build ./...
 	cd apps/dashboard && npx tsc --noEmit
+
+## integration-test: run DockerDriver acceptance suite (requires Docker daemon)
+## Runs all sub-tests in TestDockerDriverSuite + the parallel churn test.
+integration-test:
+	$(GO) test -v -tags integration -timeout 120s ./internal/sandbox/...
+
+## churn-test: 20 parallel create/exec/destroy cycles — must finish in < 60 s with zero leaks
+churn-test:
+	$(GO) test -v -tags integration -timeout 90s -run TestDockerDriverParallelChurn ./internal/sandbox/...
 
 ## verify-docker (aka sandbox-demo): Week 1-2 deliverable
 ## Spawn sandbox → exec command → write file → read it back → destroy → verify registry.
@@ -129,88 +146,78 @@ sandbox-demo:
 	echo ""; \
 	echo "═══ ✅ Layer 01 sandbox-demo passed ═══"
 
-## agent-demo: Week 3-4 deliverable
-## Runs a single coder agent inside a sandbox against a repo + task.
-## Requires a local Docker daemon + Ollama running.
-## Usage: make agent-demo REPO=<url> TASK="add a /ping endpoint"
-AGENT_TASK ?= add a /ping endpoint that returns JSON {"pong":true}
-AGENT_REPO ?= $(ORIGIN_REPO_URL)
-AGENT_ROLE ?= coder
-AGENT_IMAGE ?= alpine:3.19
+## agent-demo: Week 3-4 deliverable — run a coder agent on a running forge backend
+## Requires: forge to be running (either via `make run` or `go run ./cmd/forge`)
+## Sends a task to POST /agent/run (role=coder, model=Qwen3-coder:30b).
+##
+## Usage:
+##   make run &                  # start docker-compose in background
+##   make agent-demo REPO=https://github.com/JussMor/magickQA.api
+##   make agent-demo REPO=... TASK="custom task description"
 agent-demo:
-	@echo "═══ FORGE — Layer 02 Agent Engine Demo ═══"
-	@echo ""
-	@echo "▶ Ensuring forge is reachable..."; \
-	RUN_PORT=$(VERIFY_PORT); FORGE_PID=""; STARTED_FORGE=0; \
-	HEALTH_OK=0; AGENT_OK=0; \
-	if curl -fsS "http://localhost:$$RUN_PORT/health" >/dev/null 2>&1; then \
-	  HEALTH_OK=1; \
-	  PROBE_CODE=$$(curl -sS -o /dev/null -w '%{http_code}' -X POST "http://localhost:$$RUN_PORT/agent/run" \
-	    -H 'content-type: application/json' \
-	    -d '{}'); \
-	  if [ "$$PROBE_CODE" != "404" ]; then AGENT_OK=1; fi; \
-	fi; \
-	if [ "$$HEALTH_OK" = "1" ] && [ "$$AGENT_OK" = "1" ]; then \
-	  echo "ℹ️  Reusing existing forge on :$$RUN_PORT"; \
+	@if [ -z "$(REPO)" ]; then \
+	  printf "Repo URL (blank = no repo): "; \
+	  read REPO_IN; REPO="$$REPO_IN"; \
 	else \
-	  if [ "$$HEALTH_OK" = "1" ] && [ "$$AGENT_OK" != "1" ]; then \
-	    echo "ℹ️  Existing service on :$$RUN_PORT is not forge API compatible (/agent/run missing)"; \
-	    RUN_PORT=$$((RUN_PORT + 1)); \
-	    while lsof -iTCP:$$RUN_PORT -sTCP:LISTEN >/dev/null 2>&1; do \
-	      RUN_PORT=$$((RUN_PORT + 1)); \
-	    done; \
-	  fi; \
-	  echo "▶ Starting forge on :$$RUN_PORT..."; \
-	  PORT=$$RUN_PORT $(GO) run ./cmd/forge & \
-	  FORGE_PID=$$!; STARTED_FORGE=1; \
+	  REPO="$(REPO)"; \
 	fi; \
-	cleanup() { \
-	  if [ "$$STARTED_FORGE" = "1" ] && [ -n "$$FORGE_PID" ]; then \
-	    kill $$FORGE_PID 2>/dev/null; \
-	    wait $$FORGE_PID 2>/dev/null; \
-	  fi; \
-	}; \
-	trap cleanup EXIT INT TERM; \
-	for i in 1 2 3 4 5 6 7 8 9 10; do \
-	  if curl -fsS "http://localhost:$$RUN_PORT/health" >/dev/null 2>&1; then \
-	    PROBE_CODE=$$(curl -sS -o /dev/null -w '%{http_code}' -X POST "http://localhost:$$RUN_PORT/agent/run" \
-	      -H 'content-type: application/json' \
-	      -d '{}'); \
-	    if [ "$$PROBE_CODE" != "404" ]; then break; fi; \
-	  fi; \
-	  if [ "$$STARTED_FORGE" = "1" ] && ! kill -0 $$FORGE_PID 2>/dev/null; then \
-	    echo "❌ forge exited before becoming healthy"; exit 1; \
-	  fi; \
-	  sleep 1; \
-	done; \
-	if ! curl -fsS "http://localhost:$$RUN_PORT/health" >/dev/null 2>&1; then \
-	  echo "❌ forge not healthy on :$$RUN_PORT"; exit 1; \
+	if [ -z "$(TASK)" ] || [ "$(TASK)" = 'add a /ping endpoint that returns {"pong":true}' ]; then \
+	  printf "Task [default: add a /ping endpoint that returns {pong:true}]: "; \
+	  read TASK_IN; \
+	  if [ -z "$$TASK_IN" ]; then TASK='add a /ping endpoint that returns {"pong":true}'; else TASK="$$TASK_IN"; fi; \
+	else \
+	  TASK="$(TASK)"; \
 	fi; \
-	PROBE_CODE=$$(curl -sS -o /dev/null -w '%{http_code}' -X POST "http://localhost:$$RUN_PORT/agent/run" \
-	  -H 'content-type: application/json' \
-	  -d '{}'); \
-	if [ "$$PROBE_CODE" = "404" ]; then \
-	  echo "❌ forge on :$$RUN_PORT does not expose /agent/run"; exit 1; \
+	if [ -z "$$REPO" ]; then \
+	  echo "═══ FORGE — Layer 02 Agent Demo (no repo) ═══"; \
+	else \
+	  echo "═══ FORGE — Layer 02 Agent Demo: $$REPO ═══"; \
 	fi; \
-	echo "✅ Health OK"; \
 	echo ""; \
-	echo "▶ Running agent (role=$(AGENT_ROLE), task=\"$(AGENT_TASK)\")"; \
-	echo "  This may take several minutes while the LLM reasons..."; \
-	echo ""; \
-	BODY=$$(printf '{"repo_url":"%s","task":"%s","role":"%s","image":"%s"}' \
-	  "$(AGENT_REPO)" "$(AGENT_TASK)" "$(AGENT_ROLE)" "$(AGENT_IMAGE)"); \
-	TMP=$$(mktemp); \
-	HTTP_CODE=$$(curl -sS -o "$$TMP" -w '%{http_code}' -X POST "http://localhost:$$RUN_PORT/agent/run" \
-	  -H 'content-type: application/json' \
-	  -d "$$BODY"); \
-	RESULT=$$(cat "$$TMP"); \
-	rm -f "$$TMP"; \
-	if [ "$$HTTP_CODE" != "200" ]; then \
-	  echo "❌ /agent/run failed (HTTP $$HTTP_CODE)"; \
-	  printf '%s\n' "$$RESULT"; \
+	echo "▶ Checking if forge is running on :$(BACKEND_HOST_PORT)..."; \
+	if ! curl -fsS http://localhost:$(BACKEND_HOST_PORT)/health >/dev/null 2>&1; then \
+	  echo "❌ forge not reachable on localhost:$(BACKEND_HOST_PORT)"; \
+	  echo "   Start it with: make run   (or: PORT=7001 go run ./cmd/forge)"; \
 	  exit 1; \
 	fi; \
-	echo "── Agent Result ──"; \
-	printf '%s\n' "$$RESULT" | python3 -m json.tool; \
+	if ! docker image inspect forge-sandbox:latest >/dev/null 2>&1; then \
+	  echo "❌ sandbox image forge-sandbox:latest not found locally"; \
+	  echo "   Build it once with: make sandbox-image"; \
+	  exit 1; \
+	fi; \
+	echo "✅ Forge is healthy on :$(BACKEND_HOST_PORT)"; \
+	echo ""; \
+	echo "▶ Dispatching coder agent (model=Qwen3-coder:30b)..."; \
+	echo "  Task : $$TASK"; \
+	if [ -n "$$REPO" ]; then echo "  Repo : $$REPO"; fi; \
+	echo ""; \
+	PAYLOAD=$$(TASK="$$TASK" REPO="$$REPO" SANDBOX_ID='$(SANDBOX_ID)' python3 -c 'import json, os; d={"role":"coder","task":os.environ.get("TASK","")}; repo=os.environ.get("REPO","").strip(); sid=os.environ.get("SANDBOX_ID","").strip(); d.update({"repo_url":repo} if repo else {}); d.update({"sandbox_id":sid} if sid else {}); print(json.dumps(d))'); \
+	TMP_BODY=$$(mktemp); \
+	HTTP_CODE=$$(curl -sS --max-time 300 -o "$$TMP_BODY" -w '%{http_code}' -X POST http://localhost:$(BACKEND_HOST_PORT)/agent/run \
+	  -H 'content-type: application/json' \
+	  -d "$$PAYLOAD" || true); \
+	RESULT=$$(cat "$$TMP_BODY"); \
+	rm -f "$$TMP_BODY"; \
+	if [ "$$HTTP_CODE" -lt 200 ] || [ "$$HTTP_CODE" -ge 300 ]; then \
+	  echo "❌ /agent/run failed with HTTP $$HTTP_CODE"; \
+	  if [ -n "$$RESULT" ]; then printf '%s\n' "$$RESULT"; fi; \
+	  exit 1; \
+	fi; \
+	if [ -z "$$RESULT" ]; then \
+	  echo "❌ /agent/run returned HTTP $$HTTP_CODE but empty body"; exit 1; \
+	fi; \
+	echo "══ Answer ══"; \
+	printf '%s' "$$RESULT" | python3 -c 'import sys,json; r=json.load(sys.stdin); print(r.get("answer","(no answer)"))'; \
+	echo ""; \
+	echo "══ Stats ══"; \
+	printf '%s' "$$RESULT" | jq '.stats | "  role       : \(.role)\n  model      : \(.model)\n  iterations : \(.iterations)\n  tool_calls : \(.tool_calls)\n  tokens     : prompt=\(.prompt_tokens) completion=\(.completion_tokens)\n  wall_time  : \(.wall_time)"' -r 2>/dev/null || echo "  (stats unavailable)"; \
+	echo ""; \
+	SID=$$(printf '%s' "$$RESULT" | jq -r '.sandbox_id' 2>/dev/null); \
+	if [ -n "$$SID" ] && [ "$$SID" != "null" ]; then \
+	  echo "══ Sandbox (kept alive) ══"; \
+	  echo "  id : $$SID"; \
+	  echo "  reuse : make agent-demo SANDBOX_ID=$$SID TASK=\"...\""; \
+	  echo "  destroy: curl -X DELETE http://localhost:$(BACKEND_HOST_PORT)/sandboxes/$$SID"; \
+	fi; \
 	echo ""; \
 	echo "═══ ✅ Layer 02 agent-demo complete ═══"

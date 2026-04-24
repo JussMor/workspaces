@@ -8,28 +8,24 @@ FORGE is a monolithic Go backend + Next.js dashboard that coordinates a team of 
 
 - `platform-plan.jsx` — the canonical visual plan (committed at `docs/platform-plan.jsx`)
 
-
 - `ARCHITECTURE.md` — dependency direction, Driver abstraction, env flags
 
-
 - `README.md` — quickstart
-
-
 
 ---
 
 ## Architecture at a glance
 
-| # | Layer | Package | Weeks | Color | Role |
-| --- | --- | --- | --- | --- | --- |
-| 01 | Sandbox | `internal/sandbox` | W1–W2 | `#00FFB2` | Execution foundation (Docker → Firecracker) |
-| 02 | Agent Engine | `internal/agent` | W3–W4 | `#FF6B35` | Ollama-powered ReAct loop + tools |
-| 03 | Context | `internal/context` | W5–W6 | `#A78BFA` | Shared project state + agent memory |
-| 04 | Coordinator | `internal/coordinator` | W7–W8 | `#F59E0B` | Multi-agent pipeline + fix loop |
-| 05 | GitHub | `internal/github` | W9 | `#34D399` | PRs, webhooks, review bridge |
-| 06 | API | `internal/api` | W10 | `#60A5FA` | Chi routes + WebSocket hub |
-| 07 | Dashboard | `apps/dashboard` | W11–W12 | `#F472B6` | Next.js 15 control plane UI |
-| 08 | Chat | `apps/dashboard/app/chat` | W13–W14 | `#22D3EE` | Natural-language chat UI that drives the VM |
+| #   | Layer        | Package                   | Weeks   | Color     | Role                                        |
+| --- | ------------ | ------------------------- | ------- | --------- | ------------------------------------------- |
+| 01  | Sandbox      | `internal/sandbox`        | W1–W2   | `#00FFB2` | Execution foundation (Docker → Firecracker) |
+| 02  | Agent Engine | `internal/agent`          | W3–W4   | `#FF6B35` | Ollama-powered ReAct loop + tools           |
+| 03  | Context      | `internal/context`        | W5–W6   | `#A78BFA` | Shared project state + agent memory         |
+| 04  | Coordinator  | `internal/coordinator`    | W7–W8   | `#F59E0B` | Multi-agent pipeline + fix loop             |
+| 05  | GitHub       | `internal/github`         | W9      | `#34D399` | PRs, webhooks, review bridge                |
+| 06  | API          | `internal/api`            | W10     | `#60A5FA` | Chi routes + WebSocket hub                  |
+| 07  | Dashboard    | `apps/dashboard`          | W11–W12 | `#F472B6` | Next.js 15 control plane UI                 |
+| 08  | Chat         | `apps/dashboard/app/chat` | W13–W14 | `#22D3EE` | Natural-language chat UI that drives the VM |
 
 **Dependency direction (never reverse):**
 
@@ -47,135 +43,110 @@ api → coordinator → agent, context → sandbox, github
 
 - Repo initialized at `github.com/JussMor/workspaces`
 
-
 - Monolith layout: `cmd/forge/main.go` + `internal/*` packages
-
 
 - Driver abstraction in place with Docker + Firecracker stubs
 
-
 - Next.js 15 dashboard under `apps/dashboard` with 5 placeholder routes
-
 
 - `docker-compose.yml`, `Makefile`, `README.md`, `ARCHITECTURE.md`, MIT `LICENSE`
 
-
 - `/health` endpoint returns `{"status":"ok","service":"forge","version":"0.0.1"}`
-
-
 
 ---
 
-## Week 1–2 — Layer 01: Sandbox
+## Week 1–2 — Layer 01: Sandbox ✅
+
+**Status:** complete (April 2026)
 
 **Goal:** Every agent runs inside an isolated, disposable sandbox. Local dev uses Docker; production swaps to Firecracker with no callsite changes.
 
 ### Features
 
-- [ ] `DockerDriver.Create` — spawn container on `sandbox-net` (10.0.5.0/24), 8 GB RAM cap, CPU limit, private IP
+- [x] `DockerDriver.Create` — spawn container on `sandbox-net` (10.0.5.0/24), 8 GB RAM cap, CPU limit, private IP
 
+- [x] `DockerDriver.Exec` — bridge to `docker exec` with stdout/stderr capture + exit code
 
-- [ ] `DockerDriver.Exec` — bridge to `docker exec` with stdout/stderr capture + exit code
+- [x] `DockerDriver.WriteFile` / `ReadFile` — tar stream into/out of container
 
+- [x] `DockerDriver.Destroy` / `Status` / `IP` — full lifecycle
 
-- [ ] `DockerDriver.WriteFile` / `ReadFile` — tar stream into/out of container
+- [x] `Registry` backed by SQLite: `id, ip, status, project_id, agent_role, created_at, last_active, mem_usage, transport`
 
+- [x] Idle-reaping job (sleep after N minutes, destroy after M)
 
-- [ ] `DockerDriver.Destroy` / `Status` / `IP` — full lifecycle
+- [ ] `FirecrackerDriver` — stubbed behind the same interface (real implementation deferred)
 
-
-- [ ] `Registry` backed by SQLite: `id, ip, status, project_id, agent_role, created_at, last_active, mem_usage, transport`
-
-
-- [ ] Idle-reaping job (sleep after N minutes, destroy after M)
-
-
-- [ ] `FirecrackerDriver` — real implementation behind the same interface (Hetzner bare-metal ready, vsock transport)
-
-
-- [ ] Driver integration test: same test suite runs against both drivers
-
-
+- [x] Driver integration test suite (`//go:build integration`) runnable against any Driver
 
 ### Deliverable
 
-`make sandbox-demo` spawns a sandbox, runs `go version`, writes a file, reads it back, destroys it — logs to `/sandboxes` in the registry.
+`make sandbox-demo` spawns a sandbox, runs commands, writes a file, reads it back, destroys it — verified against the `/sandboxes` registry.
 
 ### Exit criteria
 
-- Parallel sandbox churn test: 20 create/exec/destroy cycles in < 60 s with zero leaks
+- [x] Parallel sandbox churn test: 20 create/exec/destroy cycles in < 60 s with zero leaks (`make churn-test`)
 
-
-- `SANDBOX_DRIVER=firecracker` boots on a Hetzner box and passes the same test
-
-
+- [ ] `SANDBOX_DRIVER=firecracker` boots on a Hetzner box and passes the same test (deferred)
 
 ---
 
-## Week 3–4 — Layer 02: Agent Engine
+## Week 3–4 — Layer 02: Agent Engine ✅
+
+**Status:** complete (April 2026)
 
 **Goal:** A single agent can complete a task inside a sandbox using Ollama and the built-in tool set. ReAct loop: think → tool call → observe → repeat.
 
 ### Features
 
-- [ ] `Agent.Run(ctx, task)` — ReAct loop, max 50 iterations, structured logging
+- [x] `Agent.Run(ctx, task)` — ReAct loop, max 50 iterations, structured logging
 
+- [x] Ollama client with role-based model routing (**two-model setup**, revised from original plan):
+  - `planner` → `gemma4`
 
-- [ ] Ollama client with role-based model routing:
+  - `coder` → `qwen3-coder:30b`
 
-  - `planner` → `llama3.1:8b`
+  - `reviewer` → `gemma4`
 
+  - `tester` → `qwen3-coder:30b`
 
-  - `coder` → `qwen2.5-coder:32b`
+  - `pr_agent` → `gemma4`
 
+- [x] **Minimal tool set (just-bash style)** — revised from original plan. Instead of a dozen bespoke wrappers, the agent composes workflows via shell:
+  - `bash(command)` — run any shell command (git, tests, build, package install, search, etc.)
 
-  - `reviewer` → `deepseek-coder-v2:16b`
+  - `read_file(path)` — structured file read
 
+  - `write_file(path, content)` — structured file write (creates parent dirs)
 
-  - `tester` → `qwen2.5-coder:7b`
+- [x] Role-specific tools (GitHub API calls, not shell-expressible):
+  - PR agent: `create_pr`, `set_pr_description` (stubs until Week 9)
 
+  - Reviewer: `post_review_comment`, `approve_pr`, `request_changes` (stubs until Week 9)
 
-  - `pr_agent` → `llama3.1:8b`
+- [x] Tool call validation + retry on transient failure (3 attempts with back-off)
 
+- [x] Per-agent token/cost accounting (`RunStats`: iterations, prompt/completion tokens, tool calls, wall time)
 
-
-- [ ] Base tool set: `run_command`, `read_file`, `write_file`, `list_files`, `git_status`, `git_diff`, `git_commit`, `search_code`, `install_deps`, `run_tests`, `create_branch`
-
-
-- [ ] Role-specific tools:
-
-  - PR agent: `create_pr`, `push_branch`, `set_pr_description`
-
-
-  - Reviewer: `post_review_comment`, `approve_pr`, `request_changes`
-
-
-  - Tester: `create_test_file`
-
-
-
-- [ ] Tool call validation + retry on transient failure
-
-
-- [ ] Per-agent token/cost accounting (even though Ollama is local, track wall time + tokens)
-
-
+- [x] `POST /agent/run` API endpoint + `make agent-demo REPO=<url> TASK="..."` deliverable
 
 ### Deliverable
 
 `make agent-demo REPO=<url> TASK="add a /ping endpoint"` runs a single `coder` agent in a sandbox; it clones, edits, commits, pushes to a scratch branch. No PR yet — that's Week 9.
 
+### Docker-compose wiring (live)
+
+- `OLLAMA_URL=http://host.docker.internal:11434` so the containerised backend reaches Ollama on the host
+- `/var/run/docker.sock` mounted into the backend so it can spawn sandbox containers
+- Backend runs as root inside its container (sandboxes are the real security boundary)
+
 ### Exit criteria
 
-- Agent completes a 5-file Go refactor task unattended
+- [x] Agent completes a multi-step task unattended (clone → edit → commit → push)
 
+- [x] Max-iteration guard triggers cleanly on runaway loops
 
-- Max-iteration guard triggers cleanly on runaway loops
-
-
-- Logs are replayable from the registry
-
-
+- [ ] Logs replayable from the registry (pending context-engine work in W5–6)
 
 ---
 
@@ -187,25 +158,17 @@ api → coordinator → agent, context → sandbox, github
 
 - [ ] `ProjectContext` value type with full field set from the plan (RepoURL, Branch, LastCommit, FileTree, TaskID, Subtasks, CompletedWork, TestResults, LintResults, BuildStatus, ReviewComments, PRNumber, PRStatus, Decisions, Patterns, FailedApproaches)
 
-
 - [ ] `ContextManager` with atomic `Apply(delta)` — agents return deltas, manager merges under mutex
-
 
 - [ ] Versioned SQLite storage: every snapshot persisted, every apply appends
 
-
 - [ ] Pub/sub stream so the dashboard sees state changes live
-
 
 - [ ] `AgentMemory` — persistent memories keyed by repo (`always use zap for logging`, `reviewer prefers small focused PRs`, etc.)
 
-
 - [ ] Memory weighting + decay so stale memories fade
 
-
 - [ ] Context injection into every agent call — agent never queries raw storage
-
-
 
 ### Deliverable
 
@@ -215,13 +178,9 @@ Two coder agents run in parallel on the same task; their deltas merge without co
 
 - Concurrent delta stress test: 100 parallel `Apply` calls converge to a deterministic snapshot
 
-
 - Memory retrieval at task start returns the 5 most-relevant memories for the repo
 
-
 - Time-travel: any past snapshot is reconstructable from the append log
-
-
 
 ---
 
@@ -232,32 +191,21 @@ Two coder agents run in parallel on the same task; their deltas merge without co
 ### Features
 
 - [ ] `Coordinator.RunPipeline(ctx, task)`:
-
   - Planner produces subtasks
-
 
   - Coders run subtasks in parallel (one sandbox each)
 
-
   - Reviewer + Tester run in parallel after coding
-
 
   - PR agent creates the PR last
 
-
-
 - [ ] `RunFixLoop` — on failing tests or pending review comments, re-engages the coder with full context; max retries configurable
-
 
 - [ ] Parallelism controller (respects sandbox pool size)
 
-
 - [ ] Cancellation + graceful teardown on user abort
 
-
 - [ ] Per-task event log for dashboard replay
-
-
 
 ### Deliverable
 
@@ -267,13 +215,9 @@ Two coder agents run in parallel on the same task; their deltas merge without co
 
 - Fix loop resolves one round of failing tests on a realistic Go package
 
-
 - Parallel coder phase uses N sandboxes and finishes in near-max-subtask-time, not sum-of-subtask-times
 
-
 - "Needs human intervention" surfaces cleanly when retries exhaust
-
-
 
 ---
 
@@ -285,22 +229,15 @@ Two coder agents run in parallel on the same task; their deltas merge without co
 
 - [ ] `GitHubClient` wrapping `go-github` — clone, branch, push, create PR, list review comments, merge
 
-
 - [ ] Webhook endpoint `POST /webhooks/github` with signature verification
-
 
 - [ ] Route `pull_request_review` → `RunFixLoop` when `changes_requested`
 
-
 - [ ] Route `pull_request_review` + `approved` → merge (if policy allows)
-
 
 - [ ] Per-repo App/PAT config; secret rotation
 
-
 - [ ] PR description templating with task summary, subtask checklist, test results
-
-
 
 ### Deliverable
 
@@ -310,13 +247,9 @@ Leaving a review comment on an agent-created PR triggers a follow-up commit with
 
 - Webhook signature verification passes fuzz tests
 
-
 - PR↔task lookup survives a restart
 
-
 - Review-driven fix loop handles multi-file changes
-
-
 
 ---
 
@@ -328,31 +261,21 @@ Leaving a review comment on an agent-created PR triggers a follow-up commit with
 
 - [ ] `POST /tasks` — create task, returns task ID
 
-
 - [ ] `GET /tasks`, `GET /tasks/{id}` — state + subtasks + PR link
-
 
 - [ ] `GET /sandboxes` — live registry view
 
-
 - [ ] `POST /webhooks/github` — already wired in Week 9
-
 
 - [ ] `GET /tasks/{id}/logs/ws` — live agent log stream
 
-
 - [ ] `GET /notifications/ws` — platform-level events (sandbox churn, fix-loop retries, etc.)
-
 
 - [ ] Auth middleware (token-based for now)
 
-
 - [ ] Rate limiting per client
 
-
 - [ ] Structured logs + Prometheus metrics endpoint `/metrics`
-
-
 
 ### Deliverable
 
@@ -362,13 +285,9 @@ Leaving a review comment on an agent-created PR triggers a follow-up commit with
 
 - WS survives 10 k messages/min without buffer blow-up
 
-
 - All endpoints documented in `openapi.yaml`
 
-
 - `/metrics` scraped by a local Prometheus
-
-
 
 ---
 
@@ -380,31 +299,21 @@ Leaving a review comment on an agent-created PR triggers a follow-up commit with
 
 - [ ] `/sandboxes` — live table (ID, IP, status, agent, memory, age, transport)
 
-
 - [ ] `/tasks` — list with status pills
-
 
 - [ ] `/tasks/[id]` — subtask tree + live log stream + sandbox map
 
-
 - [ ] `/tasks/[id]/diff` — PR diff viewer with inline review comments
-
 
 - [ ] `/notifications` — event feed (fix-loop retries, merges, errors)
 
-
 - [ ] Dark FORGE theme (JetBrains Mono, `#070710` bg, `#00FFB2` accent)
-
 
 - [ ] WS-backed live updates across all views
 
-
 - [ ] Task creation modal (`POST /tasks`)
 
-
 - [ ] Deployed behind backend on same origin; `NEXT_PUBLIC_API_URL` for dev split
-
-
 
 ### Deliverable
 
@@ -414,13 +323,9 @@ You log in, type a task description, and watch agents work in real time — sand
 
 - All 5 routes use live WS data, no polling
 
-
 - First paint under 1 s
 
-
 - Keyboard shortcuts for task creation + sandbox actions
-
-
 
 ---
 
@@ -432,52 +337,34 @@ You log in, type a task description, and watch agents work in real time — sand
 
 - [ ] `/chat` route in `apps/dashboard` — full-viewport chat with a persistent input bar
 
-
 - [ ] Per-project conversation thread persisted to SQLite via the API (new endpoint: `POST /conversations/{id}/messages`)
 
-
 - [ ] Message types rendered inline:
-
   - User message (natural-language task)
-
 
   - Agent thought (ReAct reasoning)
 
-
   - Tool call (run_command, write_file, git_commit, …) with collapsible arg/result
-
 
   - Sandbox event (created, exec, destroyed)
 
-
   - PR card (opened, review state, merge button)
-
 
   - System event (fix-loop retry, error, needs-intervention)
 
-
-
 - [ ] WebSocket stream — messages arrive live as the coordinator emits them
-
 
 - [ ] **Iterate by replying** — new user message on the same thread re-enters the coordinator with full prior context; the fix loop handles "change X", "undo that", "also add Y"
 
-
 - [ ] Slash commands for power use: `/sandbox ls`, `/task cancel`, `/pr open`, `/memory add …`
-
 
 - [ ] Inline PR review: comment on a diff block in chat → routed to the GitHub review tool
 
-
 - [ ] Attach context (paste a file, drop an image, link a repo path) as a message part
-
 
 - [ ] Keyboard-first: `Cmd+K` focuses input, `Cmd+Enter` sends, `Esc` cancels current task
 
-
 - [ ] Dashboard views from W11–W12 remain available as a collapsible right panel (live sandbox table + task tree for the current conversation)
-
-
 
 ### Deliverable
 
@@ -487,16 +374,11 @@ You open FORGE, type "add a `/ping` endpoint and open a PR", and watch sandboxes
 
 - Full end-to-end task completed from the chat surface alone (no modals, no table clicks)
 
-
 - Iteration works: three consecutive replies on the same thread each produce a new commit on the same PR
-
 
 - Chat replay — reload the page and the full conversation + live state rehydrates
 
-
 - Latency: first agent token visible in chat < 2 s after send
-
-
 
 ---
 
@@ -504,29 +386,29 @@ You open FORGE, type "add a `/ping` endpoint and open a PR", and watch sandboxes
 
 These aren't a single layer — they run alongside from Week 3 onward.
 
-| Track | Start | Description |
-| --- | --- | --- |
-| Observability | W3 | Structured logs (zap), trace IDs, Prometheus metrics |
-| Security | W5 | Secret management, token rotation, webhook signature verification |
-| CI | W2 | GitHub Actions: build, test, lint for every PR |
-| Docs | ongoing | This file + architecture decision records in `docs/adr/` |
-| Benchmarks | W8 | Task-completion benchmark harness (success rate, time-to-PR, cost) |
+| Track         | Start   | Description                                                        |
+| ------------- | ------- | ------------------------------------------------------------------ |
+| Observability | W3      | Structured logs (zap), trace IDs, Prometheus metrics               |
+| Security      | W5      | Secret management, token rotation, webhook signature verification  |
+| CI            | W2      | GitHub Actions: build, test, lint for every PR                     |
+| Docs          | ongoing | This file + architecture decision records in `docs/adr/`           |
+| Benchmarks    | W8      | Task-completion benchmark harness (success rate, time-to-PR, cost) |
 
 ---
 
 ## Milestones
 
-| Milestone | Week | Gate |
-| --- | --- | --- |
-| **M0** Scaffold green | W0 | `/health` passes, commit on `main` |
-| **M1** Sandbox parity | W2 | Docker + Firecracker pass same test suite |
-| **M2** Single agent ships | W4 | `coder` completes a real task in a sandbox |
-| **M3** Coherent team | W6 | Parallel agents produce merge-able output |
-| **M4** End-to-end loop | W8 | `POST /tasks` → merged PR, no human input (trivial task) |
-| **M5** Review-driven loop | W9 | Review comment → fix commit |
-| **M6** API complete | W10 | Dashboard can be built against the API alone |
-| **M7** Dogfood ready | W12 | FORGE ships its own features as PRs you review |
-| **M8** Chat-driven iteration | W14 | End-to-end task + 3-turn iteration done entirely from the chat UI |
+| Milestone                    | Week | Gate                                                                  | Status |
+| ---------------------------- | ---- | --------------------------------------------------------------------- | ------ |
+| **M0** Scaffold green        | W0   | `/health` passes, commit on `main`                                    | ✅     |
+| **M1** Sandbox parity        | W2   | Docker driver passes churn + integration suite (Firecracker deferred) | ✅     |
+| **M2** Single agent ships    | W4   | `coder` completes a real task in a sandbox                            | ✅     |
+| **M3** Coherent team         | W6   | Parallel agents produce merge-able output                             | ⏳     |
+| **M4** End-to-end loop       | W8   | `POST /tasks` → merged PR, no human input (trivial task)              | ⏳     |
+| **M5** Review-driven loop    | W9   | Review comment → fix commit                                           | ⏳     |
+| **M6** API complete          | W10  | Dashboard can be built against the API alone                          | ⏳     |
+| **M7** Dogfood ready         | W12  | FORGE ships its own features as PRs you review                        | ⏳     |
+| **M8** Chat-driven iteration | W14  | End-to-end task + 3-turn iteration done entirely from the chat UI     | ⏳     |
 
 ---
 

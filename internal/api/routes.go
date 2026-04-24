@@ -26,6 +26,12 @@ func (s *Server) registerRoutes(r *chi.Mux) {
 	r.Post("/sandboxes/{id}/exec", s.handleExecSandbox)
 	r.Delete("/sandboxes/{id}", s.handleDeleteSandbox)
 
+	// Sandbox port proxy — forwards browser traffic to a server running
+	// inside a sandbox container via the shared sandbox-net bridge.
+	// Usage: http://localhost:7001/sandboxes/{id}/port/{port}/
+	r.HandleFunc("/sandboxes/{id}/port/{port}", s.handleSandboxProxy)
+	r.HandleFunc("/sandboxes/{id}/port/{port}/*", s.handleSandboxProxy)
+
 	// Agent — LAYER 02/06, Week 3-4.
 	r.Post("/agent/run", s.handleAgentRun)
 

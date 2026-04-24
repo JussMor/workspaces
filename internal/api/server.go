@@ -63,11 +63,14 @@ func (s *Server) Handler() http.Handler {
 // TODO(forge): implement per docs/platform-plan.jsx Week 10
 func (s *Server) Run(ctx context.Context, addr string) error {
 	srv := &http.Server{
-		Addr:         addr,
-		Handler:      s.Handler(),
+		Addr:    addr,
+		Handler: s.Handler(),
+		// ReadTimeout / WriteTimeout are intentionally generous:
+		// agent runs take up to 10 min, and the sandbox proxy keeps
+		// connections open for as long as the browser holds them.
 		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		WriteTimeout: 0, // no write timeout — needed for SSE / proxy / long agent runs
+		IdleTimeout:  120 * time.Second,
 	}
 
 	errCh := make(chan error, 1)

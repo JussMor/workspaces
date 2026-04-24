@@ -26,6 +26,15 @@ const (
 
 	defaultMemMB = 8 * 1024 // 8 GB
 	defaultCPUs  = 2.0
+
+	// defaultSandboxImage is a pre-baked image (Dockerfile.sandbox) that
+	// includes a `forge` user, git, gh, go, node, python, kubectl, docker CLI,
+	// awscli, build-essential, and sudo (passwordless). The agent can install
+	// anything else at runtime via `sudo apt-get install`.
+	defaultSandboxImage = "forge-sandbox:latest"
+	sandboxUser         = "forge"
+	sandboxHome         = "/home/forge"
+	sandboxWorkdir      = "/home/forge/workspace"
 )
 
 // DockerDriver implements Driver using Docker containers.
@@ -33,6 +42,12 @@ const (
 type DockerDriver struct {
 	cli     *client.Client
 	netOnce sync.Once
+
+	// userMu protects the hasForgeUser map below.
+	userMu sync.RWMutex
+	// hasForgeUser caches per-container whether the `forge` user exists,
+	// so we don't probe on every Exec() call.
+	hasForgeUser map[string]bool
 }
 
 // compile-time interface assertion
@@ -115,7 +130,7 @@ func (d *DockerDriver) Create(ctx context.Context, cfg Config) (string, error) {
 
 	img := cfg.Image
 	if img == "" {
-		img = "alpine:latest"
+		img = defaultSandboxImage
 	}
 	if err := d.ensureImage(ctx, img); err != nil {
 		return "", err
@@ -131,6 +146,16 @@ func (d *DockerDriver) Create(ctx context.Context, cfg Config) (string, error) {
 	}
 
 	var env []string
+	// Defaults so bash tool calls behave like a real interactive shell session.
+	env = append(env,
+		"HOME="+sandboxHome,
+		"USER="+sandboxUser,
+		"LOGNAME="+sandboxUser,
+		"SHELL=/bin/bash",
+		"PATH="+sandboxHome+"/.local/bin:/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+		"TERM=xterm",
+		"LANG=C.UTF-8",
+	)
 	for k, v := range cfg.Env {
 		env = append(env, k+"="+v)
 	}
@@ -138,11 +163,24 @@ func (d *DockerDriver) Create(ctx context.Context, cfg Config) (string, error) {
 	sandboxID := uuid.New().String()
 	containerName := "forge-sandbox-" + sandboxID[:8]
 
+	// Idle forever. The `forge` user and workspace dir are expected to exist
+	// in the image (forge-sandbox:latest). The CMD runs as root (the image
+	// no longer ends with USER forge), so we can safely chown the workspace
+	// here in case a bind-mount or prior run left stale ownership. Exec()
+	// calls drop to the forge user explicitly.
+	startScript := "mkdir -p " + sandboxWorkdir +
+		" && (id forge >/dev/null 2>&1 && chown -R forge:forge " + sandboxHome + " 2>/dev/null || true)" +
+		" && cd " + sandboxWorkdir +
+		" && while true; do sleep 3600; done"
+
 	resp, err := d.cli.ContainerCreate(ctx,
 		&container.Config{
-			Image:     img,
-			Env:       env,
-			Cmd:       []string{"sh", "-c", "while true; do sleep 3600; done"},
+			Image:      img,
+			Env:        env,
+			WorkingDir: sandboxWorkdir,
+			// Start as root so we can create the workspace dir on any image.
+			// Exec calls then drop to `forge` when that user exists.
+			Cmd:       []string{"sh", "-c", startScript},
 			Tty:       false,
 			OpenStdin: false,
 		},
@@ -175,41 +213,110 @@ func (d *DockerDriver) Create(ctx context.Context, cfg Config) (string, error) {
 }
 
 // Exec runs a command inside the container identified by id (container name).
+// Commands run as the non-root `forge` user in /home/forge/workspace.
+// The user has passwordless sudo if the command needs root (e.g. apt-get install).
 func (d *DockerDriver) Exec(ctx context.Context, id, cmd string) (ExecResult, error) {
 	if err := d.initClient(); err != nil {
 		return ExecResult{}, err
 	}
 
-	execResp, err := d.cli.ContainerExecCreate(ctx, id, container.ExecOptions{
-		AttachStdout: true,
-		AttachStderr: true,
-		Cmd:          []string{"sh", "-c", cmd},
-	})
-	if err != nil {
-		return ExecResult{}, fmt.Errorf("exec create: %w", err)
+	runExec := func(user, home, shell string) (ExecResult, error) {
+		login := sandboxUser
+		if user == "" {
+			login = "root"
+		}
+		execCmd := []string{shell, "-lc", cmd}
+		if shell == "sh" {
+			execCmd = []string{"sh", "-c", cmd}
+		}
+		execResp, err := d.cli.ContainerExecCreate(ctx, id, container.ExecOptions{
+			AttachStdout: true,
+			AttachStderr: true,
+			User:         user,
+			WorkingDir:   sandboxWorkdir,
+			Env: []string{
+				"HOME=" + home,
+				"USER=" + login,
+				"LOGNAME=" + login,
+				"SHELL=" + shell,
+				"PATH=" + sandboxHome + "/.local/bin:/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+				"TERM=xterm",
+				"LANG=C.UTF-8",
+			},
+			Cmd: execCmd,
+		})
+		if err != nil {
+			return ExecResult{}, err
+		}
+
+		attach, err := d.cli.ContainerExecAttach(ctx, execResp.ID, container.ExecAttachOptions{})
+		if err != nil {
+			return ExecResult{}, fmt.Errorf("exec attach: %w", err)
+		}
+		defer attach.Close()
+
+		var stdoutBuf, stderrBuf bytes.Buffer
+		if _, err := stdcopy.StdCopy(&stdoutBuf, &stderrBuf, attach.Reader); err != nil {
+			slog.Warn("exec stream demux", "err", err)
+		}
+
+		inspect, err := d.cli.ContainerExecInspect(ctx, execResp.ID)
+		if err != nil {
+			return ExecResult{}, fmt.Errorf("exec inspect: %w", err)
+		}
+
+		return ExecResult{
+			Stdout:   stdoutBuf.String(),
+			Stderr:   stderrBuf.String(),
+			ExitCode: inspect.ExitCode,
+		}, nil
 	}
 
-	attach, err := d.cli.ContainerExecAttach(ctx, execResp.ID, container.ExecAttachOptions{})
-	if err != nil {
-		return ExecResult{}, fmt.Errorf("exec attach: %w", err)
+	// Preferred path: run as forge with bash in the batteries-included image.
+	// We cache per-container whether the forge user exists, because docker
+	// exec with a missing user returns exit code 126 + stdout "unable to
+	// find user forge" (NOT a Go error), which is expensive to detect.
+	useForge := true
+	d.userMu.RLock()
+	if d.hasForgeUser != nil {
+		if v, ok := d.hasForgeUser[id]; ok {
+			useForge = v
+		}
 	}
-	defer attach.Close()
+	d.userMu.RUnlock()
 
-	var stdoutBuf, stderrBuf bytes.Buffer
-	if _, err := stdcopy.StdCopy(&stdoutBuf, &stderrBuf, attach.Reader); err != nil {
-		slog.Warn("exec stream demux", "err", err)
+	if useForge {
+		res, err := runExec(sandboxUser, sandboxHome, "bash")
+		if err == nil {
+			// Detect "unable to find user forge" (exit 126) and remember.
+			if res.ExitCode == 126 && strings.Contains(res.Stdout+res.Stderr, "unable to find user") {
+				d.userMu.Lock()
+				if d.hasForgeUser == nil {
+					d.hasForgeUser = map[string]bool{}
+				}
+				d.hasForgeUser[id] = false
+				d.userMu.Unlock()
+				slog.Warn("forge user missing in container, falling back to root", "sandbox", id)
+			} else {
+				d.userMu.Lock()
+				if d.hasForgeUser == nil {
+					d.hasForgeUser = map[string]bool{}
+				}
+				d.hasForgeUser[id] = true
+				d.userMu.Unlock()
+				return res, nil
+			}
+		} else {
+			slog.Warn("exec as forge failed, falling back to root+sh", "sandbox", id, "err", err)
+		}
 	}
 
-	inspect, err := d.cli.ContainerExecInspect(ctx, execResp.ID)
-	if err != nil {
-		return ExecResult{}, fmt.Errorf("exec inspect: %w", err)
+	// Fallback for custom images that don't have the forge user or bash.
+	res, ferr := runExec("", "/root", "sh")
+	if ferr != nil {
+		return ExecResult{}, fmt.Errorf("exec create: %w", ferr)
 	}
-
-	return ExecResult{
-		Stdout:   stdoutBuf.String(),
-		Stderr:   stderrBuf.String(),
-		ExitCode: inspect.ExitCode,
-	}, nil
+	return res, nil
 }
 
 // WriteFile writes content to path inside the container via docker cp (tar stream).
@@ -288,6 +395,9 @@ func (d *DockerDriver) Destroy(ctx context.Context, id string) error {
 	if err != nil && !client.IsErrNotFound(err) {
 		return fmt.Errorf("container remove: %w", err)
 	}
+	d.userMu.Lock()
+	delete(d.hasForgeUser, id)
+	d.userMu.Unlock()
 	slog.Info("container destroyed", "id", id)
 	return nil
 }

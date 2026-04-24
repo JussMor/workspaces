@@ -27,31 +27,23 @@ type ToolRegistry struct {
 func NewToolRegistry() *ToolRegistry {
 	r := &ToolRegistry{tools: make(map[string]Tool)}
 
-	// Base tools — available to every role.
-	r.register(toolRunCommand())
+	// Core tools — the minimal set agents actually need.
+	// Everything else (git, tests, package install, search, etc.) is done
+	// via bash. This mirrors the just-bash / "let the agent write shell"
+	// philosophy and removes the need for dozens of bespoke tool wrappers.
+	r.register(toolBash())
 	r.register(toolReadFile())
 	r.register(toolWriteFile())
-	r.register(toolListFiles())
-	r.register(toolGitStatus())
-	r.register(toolGitDiff())
-	r.register(toolGitCommit())
-	r.register(toolSearchCode())
-	r.register(toolInstallDeps())
-	r.register(toolRunTests())
-	r.register(toolCreateBranch())
 
-	// PR agent tools.
+	// PR agent tools — higher-level GitHub integrations that cannot be
+	// expressed as shell commands (they go through the GitHub API client).
 	r.register(toolCreatePR())
-	r.register(toolPushBranch())
 	r.register(toolSetPRDescription())
 
-	// Reviewer tools.
+	// Reviewer tools — also GitHub-API-backed.
 	r.register(toolPostReviewComment())
 	r.register(toolApprovePR())
 	r.register(toolRequestChanges())
-
-	// Tester tools.
-	r.register(toolCreateTestFile())
 
 	return r
 }
@@ -99,37 +91,70 @@ func strArg(args map[string]any, key string) string {
 func execCmd(ctx context.Context, sandboxID string, drv sandbox.Driver, cmd string) (string, error) {
 	res, err := drv.Exec(ctx, sandboxID, cmd)
 	if err != nil {
+		slog.Error("tool:bash exec error", "sandbox", sandboxID, "cmd", cmd, "err", err)
 		return "", err
 	}
-	out := strings.TrimSpace(res.Stdout)
-	if res.Stderr != "" {
-		out += "\n[stderr] " + strings.TrimSpace(res.Stderr)
+	slog.Info("tool:bash result",
+		"sandbox", sandboxID,
+		"exit", res.ExitCode,
+		"stdout_bytes", len(res.Stdout),
+		"stderr_bytes", len(res.Stderr),
+		"stdout_preview", truncate(res.Stdout, 400),
+		"stderr_preview", truncate(res.Stderr, 400),
+	)
+
+	var parts []string
+	stdout := strings.TrimRight(res.Stdout, "\n")
+	stderr := strings.TrimRight(res.Stderr, "\n")
+	if stdout != "" {
+		parts = append(parts, "[stdout]\n"+stdout)
 	}
-	if res.ExitCode != 0 {
-		out += fmt.Sprintf("\n[exit_code=%d]", res.ExitCode)
+	if stderr != "" {
+		parts = append(parts, "[stderr]\n"+stderr)
 	}
-	return out, nil
+	parts = append(parts, fmt.Sprintf("[exit_code=%d]", res.ExitCode))
+	if stdout == "" && stderr == "" && res.ExitCode == 0 {
+		// Make "silent success" explicit so the model doesn't think nothing happened.
+		parts = append([]string{"(command produced no output)"}, parts...)
+	}
+	return strings.Join(parts, "\n"), nil
 }
 
-// ── Base tools ───────────────────────────────────────────────────────────────
+func truncate(s string, n int) string {
+	s = strings.TrimSpace(s)
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
+}
 
-func toolRunCommand() Tool {
+// ── Core tools ───────────────────────────────────────────────────────────────
+
+// toolBash is the swiss-army tool. Any shell command the agent can think of
+// can be expressed here: git, build, test, package install, file listing,
+// search, network calls, anything. Each invocation is a fresh shell — state
+// (cwd, env vars, background processes) is NOT preserved between calls, so
+// the agent must use absolute paths or chain commands with `&&`.
+func toolBash() Tool {
 	return Tool{
-		Name:        "run_command",
-		Description: "Execute a shell command in the sandbox and return combined stdout/stderr.",
+		Name: "bash",
+		Description: "Run a shell command inside the sandbox. Each call is a fresh shell — " +
+			"state is NOT preserved between calls. Use absolute paths or chain with `&&`. " +
+			"Use this for everything: git clone/commit/push, running tests, installing packages, " +
+			"searching files, creating directories, etc.",
 		Parameters: ToolFuncParams{
 			Type: "object",
 			Properties: map[string]ToolParam{
-				"command": {Type: "string", Description: "The shell command to execute"},
+				"command": {Type: "string", Description: "The shell command to execute (bash -c)"},
 			},
 			Required: []string{"command"},
 		},
 		Execute: func(ctx context.Context, sid string, drv sandbox.Driver, args map[string]any) (string, error) {
 			cmd := strArg(args, "command")
 			if cmd == "" {
-				return "", fmt.Errorf("run_command: command is required")
+				return "", fmt.Errorf("bash: command is required")
 			}
-			slog.Debug("tool:run_command", "sandbox", sid, "cmd", cmd)
+			slog.Info("tool:bash", "sandbox", sid, "cmd", cmd)
 			return execCmd(ctx, sid, drv, cmd)
 		},
 	}
@@ -191,204 +216,7 @@ func toolWriteFile() Tool {
 	}
 }
 
-func toolListFiles() Tool {
-	return Tool{
-		Name:        "list_files",
-		Description: "List files and directories in a directory inside the sandbox.",
-		Parameters: ToolFuncParams{
-			Type: "object",
-			Properties: map[string]ToolParam{
-				"directory": {Type: "string", Description: "Directory path to list (default: current working dir)"},
-			},
-			Required: []string{},
-		},
-		Execute: func(ctx context.Context, sid string, drv sandbox.Driver, args map[string]any) (string, error) {
-			dir := strArg(args, "directory")
-			if dir == "" {
-				dir = "."
-			}
-			slog.Debug("tool:list_files", "sandbox", sid, "dir", dir)
-			return execCmd(ctx, sid, drv, "find "+dir+" -maxdepth 2 -type f -o -type d | head -200")
-		},
-	}
-}
-
-func toolGitStatus() Tool {
-	return Tool{
-		Name:        "git_status",
-		Description: "Show the working tree status (git status).",
-		Parameters: ToolFuncParams{
-			Type:       "object",
-			Properties: map[string]ToolParam{},
-			Required:   []string{},
-		},
-		Execute: func(ctx context.Context, sid string, drv sandbox.Driver, _ map[string]any) (string, error) {
-			slog.Debug("tool:git_status", "sandbox", sid)
-			return execCmd(ctx, sid, drv, "git status")
-		},
-	}
-}
-
-func toolGitDiff() Tool {
-	return Tool{
-		Name:        "git_diff",
-		Description: "Show the diff of uncommitted changes (git diff).",
-		Parameters: ToolFuncParams{
-			Type:       "object",
-			Properties: map[string]ToolParam{},
-			Required:   []string{},
-		},
-		Execute: func(ctx context.Context, sid string, drv sandbox.Driver, _ map[string]any) (string, error) {
-			slog.Debug("tool:git_diff", "sandbox", sid)
-			return execCmd(ctx, sid, drv, "git diff")
-		},
-	}
-}
-
-func toolGitCommit() Tool {
-	return Tool{
-		Name:        "git_commit",
-		Description: "Stage all changes and commit with the given message.",
-		Parameters: ToolFuncParams{
-			Type: "object",
-			Properties: map[string]ToolParam{
-				"message": {Type: "string", Description: "Commit message"},
-			},
-			Required: []string{"message"},
-		},
-		Execute: func(ctx context.Context, sid string, drv sandbox.Driver, args map[string]any) (string, error) {
-			msg := strArg(args, "message")
-			if msg == "" {
-				return "", fmt.Errorf("git_commit: message is required")
-			}
-			slog.Debug("tool:git_commit", "sandbox", sid, "message", msg)
-			// Sanitise single quotes in the commit message.
-			safe := strings.ReplaceAll(msg, "'", "'\\''")
-			return execCmd(ctx, sid, drv, "git add -A && git commit -m '"+safe+"'")
-		},
-	}
-}
-
-func toolSearchCode() Tool {
-	return Tool{
-		Name:        "search_code",
-		Description: "Search for a pattern in the codebase using grep.",
-		Parameters: ToolFuncParams{
-			Type: "object",
-			Properties: map[string]ToolParam{
-				"pattern": {Type: "string", Description: "Search pattern (grep -rn)"},
-			},
-			Required: []string{"pattern"},
-		},
-		Execute: func(ctx context.Context, sid string, drv sandbox.Driver, args map[string]any) (string, error) {
-			pattern := strArg(args, "pattern")
-			if pattern == "" {
-				return "", fmt.Errorf("search_code: pattern is required")
-			}
-			slog.Debug("tool:search_code", "sandbox", sid, "pattern", pattern)
-			safe := strings.ReplaceAll(pattern, "'", "'\\''")
-			return execCmd(ctx, sid, drv, "grep -rn '"+safe+"' . --include='*.go' --include='*.js' --include='*.ts' --include='*.py' --include='*.rs' | head -100")
-		},
-	}
-}
-
-func toolInstallDeps() Tool {
-	return Tool{
-		Name:        "install_deps",
-		Description: "Detect the project language and install dependencies (go mod tidy, npm install, etc.).",
-		Parameters: ToolFuncParams{
-			Type:       "object",
-			Properties: map[string]ToolParam{},
-			Required:   []string{},
-		},
-		Execute: func(ctx context.Context, sid string, drv sandbox.Driver, _ map[string]any) (string, error) {
-			slog.Debug("tool:install_deps", "sandbox", sid)
-			// Auto-detect by looking for common manifest files.
-			script := `
-if [ -f go.mod ]; then
-  go mod tidy 2>&1
-elif [ -f package.json ]; then
-  npm install 2>&1
-elif [ -f requirements.txt ]; then
-  pip install -r requirements.txt 2>&1
-elif [ -f Cargo.toml ]; then
-  cargo fetch 2>&1
-else
-  echo "no recognised dependency manifest found"
-fi`
-			return execCmd(ctx, sid, drv, script)
-		},
-	}
-}
-
-func toolRunTests() Tool {
-	return Tool{
-		Name:        "run_tests",
-		Description: "Detect the project language and run the test suite.",
-		Parameters: ToolFuncParams{
-			Type:       "object",
-			Properties: map[string]ToolParam{},
-			Required:   []string{},
-		},
-		Execute: func(ctx context.Context, sid string, drv sandbox.Driver, _ map[string]any) (string, error) {
-			slog.Debug("tool:run_tests", "sandbox", sid)
-			script := `
-if [ -f go.mod ]; then
-  go test ./... 2>&1
-elif [ -f package.json ]; then
-  npm test 2>&1
-elif [ -f requirements.txt ] || [ -f setup.py ]; then
-  python -m pytest 2>&1
-elif [ -f Cargo.toml ]; then
-  cargo test 2>&1
-else
-  echo "no recognised test runner found"
-fi`
-			return execCmd(ctx, sid, drv, script)
-		},
-	}
-}
-
-func toolCreateBranch() Tool {
-	return Tool{
-		Name:        "create_branch",
-		Description: "Create and switch to a new git branch.",
-		Parameters: ToolFuncParams{
-			Type: "object",
-			Properties: map[string]ToolParam{
-				"name": {Type: "string", Description: "Branch name to create"},
-			},
-			Required: []string{"name"},
-		},
-		Execute: func(ctx context.Context, sid string, drv sandbox.Driver, args map[string]any) (string, error) {
-			name := strArg(args, "name")
-			if name == "" {
-				return "", fmt.Errorf("create_branch: name is required")
-			}
-			slog.Debug("tool:create_branch", "sandbox", sid, "branch", name)
-			safe := strings.ReplaceAll(name, "'", "'\\''")
-			return execCmd(ctx, sid, drv, "git checkout -b '"+safe+"'")
-		},
-	}
-}
-
 // ── PR agent tools ───────────────────────────────────────────────────────────
-
-func toolPushBranch() Tool {
-	return Tool{
-		Name:        "push_branch",
-		Description: "Push the current branch to the remote origin.",
-		Parameters: ToolFuncParams{
-			Type:       "object",
-			Properties: map[string]ToolParam{},
-			Required:   []string{},
-		},
-		Execute: func(ctx context.Context, sid string, drv sandbox.Driver, _ map[string]any) (string, error) {
-			slog.Debug("tool:push_branch", "sandbox", sid)
-			return execCmd(ctx, sid, drv, "git push -u origin HEAD")
-		},
-	}
-}
 
 func toolCreatePR() Tool {
 	return Tool{
@@ -481,41 +309,6 @@ func toolRequestChanges() Tool {
 		Execute: func(_ context.Context, _ string, _ sandbox.Driver, args map[string]any) (string, error) {
 			slog.Info("tool:request_changes (stub)", "reason", strArg(args, "reason"))
 			return "request-changes stubbed — will be wired in Week 9", nil
-		},
-	}
-}
-
-// ── Tester tools ─────────────────────────────────────────────────────────────
-
-func toolCreateTestFile() Tool {
-	return Tool{
-		Name:        "create_test_file",
-		Description: "Create a test file in the sandbox. Convenience wrapper over write_file for test files.",
-		Parameters: ToolFuncParams{
-			Type: "object",
-			Properties: map[string]ToolParam{
-				"path":    {Type: "string", Description: "Path for the test file"},
-				"content": {Type: "string", Description: "Test file content"},
-			},
-			Required: []string{"path", "content"},
-		},
-		Execute: func(ctx context.Context, sid string, drv sandbox.Driver, args map[string]any) (string, error) {
-			path := strArg(args, "path")
-			content := strArg(args, "content")
-			if path == "" {
-				return "", fmt.Errorf("create_test_file: path is required")
-			}
-			slog.Debug("tool:create_test_file", "sandbox", sid, "path", path)
-			dir := path[:strings.LastIndex(path, "/")+1]
-			if dir != "" && dir != "/" {
-				if _, err := drv.Exec(ctx, sid, "mkdir -p "+dir); err != nil {
-					return "", fmt.Errorf("create_test_file: mkdir: %w", err)
-				}
-			}
-			if err := drv.WriteFile(ctx, sid, path, content); err != nil {
-				return "", err
-			}
-			return fmt.Sprintf("test file written: %s (%d bytes)", path, len(content)), nil
 		},
 	}
 }
